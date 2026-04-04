@@ -81,14 +81,56 @@ class DiscordMonitor(discord.Client):
         if message.author == self.user:
             return
         
+        author_name = message.author.name
+        channel_name = message.channel.name if hasattr(message.channel, 'name') else str(message.channel)
+        content = message.content
+        
         # Store all messages from channels we can read
         self.collected_messages.append({
-            "author": message.author.name,
+            "author": author_name,
             "author_id": message.author.id,
-            "content": message.content,
-            "channel": message.channel.name if hasattr(message.channel, 'name') else str(message.channel),
+            "content": content,
+            "channel": channel_name,
             "timestamp": message.created_at.isoformat()
         })
+        
+        # Check for instant alerts - ТОЛЬКО dla ważnych autorów i kanałów
+        should_alert = False
+        alert_type = None
+        alert_asset = None
+        
+        # Alert 1: Wszystkie wpisy z kanałów portfel-*
+        if channel_name.startswith("portfel-"):
+            should_alert = True
+            alert_type = "AKCJA PORTFELA"
+            alert_asset = channel_name
+        
+        # Alert 2: Wpisy Piotra (dnarynkow) lub Jurka (jurek_dna) z kanałów przemyślenia
+        elif author_name in ["dnarynkow", "jurek_dna"] and channel_name in ["przemyślenia-piotr", "przemyślenia-jurek"]:
+            # Tylko jeśli ma słowa klucze akcji
+            action_keywords = ["kupuję", "kupię", "sprzedaję", "sprzedaż", "zwiększam", "zmniejszam", "wychodzę", "wchodzę", "kupna", "sprzedaży"]
+            if any(keyword in content.lower() for keyword in action_keywords):
+                should_alert = True
+                alert_type = "EKSPERCKA OPINIA"
+                alert_asset = "Ogólna analiza"
+        
+        # Alert 3: Wpisy Piotra/Jurka w kanałach spółek
+        elif author_name in ["dnarynkow", "jurek_dna"]:
+            should_alert = True
+            alert_type = "WPIS EKSPERTA"
+            alert_asset = channel_name.replace("portfel-", "").replace("-", " ").title()
+        
+        # Wyślij alert jeśli spełnia warunki
+        if should_alert:
+            alert_data = {
+                "author": author_name,
+                "channel": channel_name,
+                "message": content[:500],  # Ogranicz do 500 znaków
+                "type": alert_type,
+                "asset": alert_asset,
+                "relevance": "wysoka"
+            }
+            await send_instant_alert(alert_data)
 
 # ==================== EMAIL ====================
 
@@ -113,6 +155,61 @@ async def send_email(subject, body_html):
         print(f"❌ Błąd wysyłania emaila: {e}")
         return False
 
+async def send_instant_alert(message_data):
+    """Send instant alert for important messages"""
+    author = message_data.get("author", "Anonimowy")
+    channel = message_data.get("channel", "unknown")
+    content = message_data.get("message", "Brak treści")
+    msg_type = message_data.get("type", "WIADOMOŚĆ")
+    asset = message_data.get("asset", "")
+    
+    # Ustaw temat i styl alertu
+    if msg_type == "AKCJA PORTFELA":
+        icon = "🚀"
+        color = "#D32F2F"
+        subject = f"🚀 ALERT PORTFELA: {asset}"
+    elif msg_type == "EKSPERCKA OPINIA" or msg_type == "WPIS EKSPERTA":
+        icon = "⭐"
+        color = "#FF6B35"
+        subject = f"⭐ ALERT EKSPERTA: {asset or 'Ogólna analiza'}"
+    else:
+        icon = "📌"
+        color = "#0066cc"
+        subject = f"📌 ALERT: {asset or channel}"
+    
+    html = f"""
+    <html>
+        <head><meta charset="UTF-8"></head>
+        <body style="font-family: Arial, sans-serif; color: #333;">
+            <div style="background: linear-gradient(135deg, {color}, {color}dd); padding: 20px; border-radius: 8px; color: white; margin-bottom: 20px;">
+                <h2 style="margin: 0; font-size: 24px;">{icon} WAŻNA WIADOMOŚĆ!</h2>
+                <p style="margin: 5px 0 0 0; font-size: 14px;">Przyszła natychmiast - przeczytaj!</p>
+            </div>
+            
+            <div style="background: #f9f9f9; padding: 15px; border-left: 4px solid {color}; border-radius: 4px;">
+                <p style="margin: 0 0 10px 0;">
+                    <strong style="color: {color};">@{author}</strong>
+                    <span style="color: #999; font-size: 12px;">#{channel}</span>
+                </p>
+                <p style="margin: 0 0 10px 0; font-size: 14px; color: #333;">
+                    {content}
+                </p>
+                <p style="margin: 0; font-size: 12px; color: #666;">
+                    Typ: <span style="color: {color}; font-weight: bold;">{msg_type}</span><br>
+                    Czas: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+                </p>
+            </div>
+            
+            <hr style="margin-top: 20px; border: none; border-top: 1px solid #ddd;">
+            <p style="font-size: 12px; color: #999; margin-top: 15px;">
+                Raport wysłany automatycznie przez Discord Monitor Bot
+            </p>
+        </body>
+    </html>
+    """
+    
+    await send_email(subject, html)
+
 # ==================== CLAUDE AI ANALYSIS ====================
 
 def analyze_messages_with_claude(messages_text):
@@ -126,49 +223,54 @@ def analyze_messages_with_claude(messages_text):
 
 TWOJA ROLA: Przeanalizuj poniższe wiadomości i wyodrębnij TYLKO te, które są istotne dla inwestora.
 
+EKSPERCI: dnarynkow (Piotr) i jurek_dna (Jurek)
+
 PRIORYTET 1 (SUPER WAŻNE - ZAWSZE BIERZ): 
 - WSZYSTKIE wiadomości z kanałów "portfel-*" (portfel-kwartalny-etf, portfel-agresywny-freedom, portfel-emerytany-xtb, portfel-defensywny-saxo, portfel-szaleniec, portfel-kilimandżaro, portfel-gubalowka, portfel-krypto)
-- Te kanały zawierają AKCJE kupna/sprzedaży Piotra - możesz je kopiować!
-- Oznacz wszystkie jako "AKCJA KUPNA/SPRZEDAŻY" i relevance = "wysoka"
+- Te kanały zawierają AKCJE kupna/sprzedaży/zwiększenia/zmniejszenia pozycji Piotra
+- Oznacz wszystkie jako "AKCJA PORTFELA" i relevance = "wysoka"
 
-PRIORYTET 2 (ZAWSZE BIERZ): 
-- WSZYSTKIE wiadomości z kanałów "przemyślenia-jurek" i "przemyślenia-piotr"
-- Te kanały zawierają cenne spostrzeżenia tych ekspertów
+PRIORYTET 2 (ZAWSZE BIERZ JEŚLI MA AKCJĘ): 
+- Wiadomości z kanałów "przemyślenia-jurek" i "przemyślenia-piotr"
+- ALE TYLKO jeśli sugerują: kupno, sprzedaż, zwiększenie pozycji, zmniejszenie pozycji, czy zmianę
+- Ignoruj: ogólne dyskusje, analizy bez konkretnego działania
 
-PRIORYTET 3:
-- Wiadomości dotyczące DOWOLNEGO z tych aktywów:
-{stocks_list}
-- Rozumiej kontekst - np "S&P 500" = iShares Core S&P 500, "Brazil" = MSCI Brazil ETF
+PRIORYTET 3 (ZAWSZE BIERZ JEŚLI PIOTR/JUREK):
+- Wpisy z kanałów konkretnych spółek
+- ALE TYLKO jeśli autor to dnarynkow (Piotr) lub jurek_dna (Jurek)
+- I jeśli wpis jest istotny (nie ogólna dyskusja)
 
-PRIORYTET 4:
-- Propozycje KUPNA/SPRZEDAŻY/ANALIZY spółek którymi inwestor się nie zajmuje (ale które mogą być interesujące)
-- "Wspomnę o akcjach MEVO" = bierz to nawet jeśli MEVO nie jest na liście
+PRIORYTET 4 (Niskiprioritet):
+- Wpisy o monitowanych aktywach od innych osób (nie Piotra/Jurka)
+- Tylko jeśli dotyczą kupna/sprzedaży/akcji
+
+PRIORYTET 5:
+- Propozycje KUPNA/SPRZEDAŻY nowych spółek od Piotra lub Jurka
 
 WIADOMOŚCI Z DISCORD:
 {messages_text}
 
 INSTRUKCJE:
-1. Wszystkie wpisy z kanałów "portfel-*" → ZAWSZE BIERZ (wysoka relevance) - to są AKCJE!
-2. Wszystkie wpisy z "przemyślenia-jurek" i "przemyślenia-piotr" → ZAWSZE BIERZ (wysoka relevance)
-3. Wpisy o monitowanych aktywach → bierz (wysoka/średnia relevance)
-4. Propozycje kupna/sprzedaży/analizy nowych spółek → bierz (średnia relevance)
-5. Ignoruj: ogólne dyskusje, memy, powitania, szum bez wartości
-6. Dla każdej wiadomości podaj:
-   - Które aktywo dotyczy (lub "Akcja portfela" dla portfel-*, "Ogólna analiza" dla przemyśleń)
+1. Wszystkie wpisy z kanałów "portfel-*" → ZAWSZE BIERZ (to są AKCJE)
+2. Wpisy z "przemyślenia-jurek" i "przemyślenia-piotr" → BIERZ TYLKO jeśli sugerują AKCJĘ (kupno/sprzedaż/zmianę pozycji)
+3. Wpisy ze spółek → BIERZ TYLKO jeśli autor to dnarynkow lub jurek_dna i coś istotnego
+4. Propozycje nowych spółek → BIERZ TYLKO od Piotra/Jurka
+5. Dla każdej wiadomości podaj:
+   - Które aktywo dotyczy
    - Treść (streszczenie)
    - Autora
    - Kanał
-   - Typ: "AKCJA PORTFELA" jeśli z kanału portfel-*, "EKSPERCKA OPINIA" jeśli z przemyśleń, "MONITOROWANE AKTYWO" jeśli o Twoim, "PROPOZYCJA NOWA" jeśli nowa spółka
+   - Typ: "AKCJA PORTFELA" | "EKSPERCKA OPINIA" | "WPIS EKSPERTA" | "PROPOZYCJA NOWA"
 
 ODPOWIEDŹ - zwróć czystą listę w formacie JSON bez dodatkowego tekstu:
 [
   {{
-    "asset": "nazwa aktywu lub 'Akcja portfela' lub 'Ogólna analiza'",
+    "asset": "nazwa aktywu lub 'Akcja portfela' lub 'Opinia eksperta'",
     "author": "nazwa autora",
     "channel": "nazwa kanału",
     "message": "streszczenie wiadomości (1-3 zdania)",
     "relevance": "wysoka" | "średnia",
-    "type": "AKCJA PORTFELA" | "EKSPERCKA OPINIA" | "MONITOROWANE AKTYWO" | "PROPOZYCJA NOWA"
+    "type": "AKCJA PORTFELA" | "EKSPERCKA OPINIA" | "WPIS EKSPERTA" | "PROPOZYCJA NOWA"
   }},
   ...
 ]
@@ -227,9 +329,10 @@ def generate_html_report(relevant_messages):
         """
         return html
     
-    # Sort by type: AKCJA PORTFELA first, then EKSPERCKA OPINIA, then others
+    # Sort by type: AKCJA PORTFELA first, then others
     portfolio_actions = [m for m in relevant_messages if m.get("type") == "AKCJA PORTFELA"]
-    expert_messages = [m for m in relevant_messages if m.get("type") == "EKSPERCKA OPINIA"]
+    expert_posts = [m for m in relevant_messages if m.get("type") == "WPIS EKSPERTA"]
+    expert_opinions = [m for m in relevant_messages if m.get("type") == "EKSPERCKA OPINIA"]
     monitored_messages = [m for m in relevant_messages if m.get("type") == "MONITOROWANE AKTYWO"]
     new_proposal_messages = [m for m in relevant_messages if m.get("type") == "PROPOZYCJA NOWA"]
     
@@ -267,12 +370,12 @@ def generate_html_report(relevant_messages):
             """
     
     # Expert opinions section
-    if expert_messages:
+    if expert_opinions:
         html += f"""
-            <h3 style="color: #FF6B35; margin-top: 20px;">⭐ EKSPERCKIE OPINIE (Piotr & Jurek)</h3>
-            <p style="color: #666; font-size: 13px; margin-top: 0;">Te wpisy zawierają cenne spostrzeżenia od ekspertów</p>
+            <h3 style="color: #FF6B35; margin-top: 20px;">⭐ EKSPERCKIE OPINIE (Przemyślenia)</h3>
+            <p style="color: #666; font-size: 13px; margin-top: 0;">Wpisy Piotra/Jurka sugerujące akcje (kupno/sprzedaż/zmianę pozycji)</p>
         """
-        for msg in expert_messages:
+        for msg in expert_opinions:
             html += f"""
             <div style="background: #fff3e0; padding: 12px; margin: 10px 0; border-left: 4px solid #FF6B35; border-radius: 4px;">
                 <p style="margin: 0 0 8px 0;">
@@ -283,6 +386,28 @@ def generate_html_report(relevant_messages):
                     {msg.get('message', 'Brak treści')}
                 </p>
                 <p style="margin: 5px 0 0 0; font-size: 11px; color: #FF6B35;">
+                    Istotność: <span style="font-weight: bold;">{msg.get('relevance', 'nieznana').upper()}</span>
+                </p>
+            </div>
+            """
+    
+    # Expert posts in asset channels section
+    if expert_posts:
+        html += f"""
+            <h3 style="color: #9C27B0; margin-top: 20px;">💬 WPISY EKSPERTÓW W KANAŁACH SPÓŁEK</h3>
+            <p style="color: #666; font-size: 13px; margin-top: 0;">Wpisy Piotra/Jurka dotyczące konkretnych spółek</p>
+        """
+        for msg in expert_posts:
+            html += f"""
+            <div style="background: #F3E5F5; padding: 12px; margin: 10px 0; border-left: 4px solid #9C27B0; border-radius: 4px;">
+                <p style="margin: 0 0 8px 0;">
+                    <strong style="color: #9C27B0;">💬 {msg.get('asset', 'Spółka')}</strong>
+                    <span style="color: #999; font-size: 12px;">od @{msg.get('author', 'Anonimowy')}</span>
+                </p>
+                <p style="margin: 0; color: #333;">
+                    {msg.get('message', 'Brak treści')}
+                </p>
+                <p style="margin: 5px 0 0 0; font-size: 11px; color: #9C27B0;">
                     Istotność: <span style="font-weight: bold;">{msg.get('relevance', 'nieznana').upper()}</span>
                 </p>
             </div>
