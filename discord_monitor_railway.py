@@ -4,7 +4,7 @@ import aiosmtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import json
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import anthropic
 import os
 from dotenv import load_dotenv
@@ -14,6 +14,8 @@ load_dotenv()
 
 # ==================== CONFIG ====================
 CONFIG_FILE = "config.json"
+FIRST_RUN_TIME = datetime.now() - timedelta(hours=24)  # Czyta wiadomości z ostatnich 24h
+DAILY_MESSAGES = []  # Przechowuje wiadomości dla codziennego raportu
 
 def load_config():
     """Load config from JSON file and override with environment variables"""
@@ -51,21 +53,14 @@ ANTHROPIC_API_KEY = config.get("anthropic_api_key") or os.getenv("ANTHROPIC_API_
 if not DISCORD_TOKEN:
     print("ERROR: DISCORD_TOKEN not set!")
     exit(1)
-if not GMAIL_ADDRESS or not GMAIL_PASSWORD:
-    print("ERROR: Gmail credentials not set!")
-    exit(1)
 if not ANTHROPIC_API_KEY:
     print("ERROR: ANTHROPIC_API_KEY not set!")
     exit(1)
+if not GMAIL_ADDRESS or not GMAIL_PASSWORD:
+    print("ERROR: Gmail credentials not set!")
+    exit(1)
 
-print(f"✅ Config loaded successfully")
-print(f"   Discord Token: {DISCORD_TOKEN[:20]}...")
-print(f"   Gmail: {GMAIL_ADDRESS}")
-print(f"   Recipient: {RECIPIENT_EMAIL}")
-print(f"   Report time: {REPORT_HOUR:02d}:{REPORT_MINUTE:02d}")
-print(f"   Monitoring {len(STOCKS_AND_ETFS)} assets")
-
-# ==================== DISCORD BOT ====================
+# ==================== DISCORD CLIENT ====================
 
 class DiscordMonitor(discord.Client):
     def __init__(self):
@@ -75,10 +70,17 @@ class DiscordMonitor(discord.Client):
 
     async def on_ready(self):
         print(f"✅ Bot zalogowany jako: {self.user}")
+        print(f"⏰ Czas uruchomienia: {FIRST_RUN_TIME.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"📊 Codzienne podsumowanie o: {REPORT_HOUR:02d}:{REPORT_MINUTE:02d}")
         self.ready = True
 
     async def on_message(self, message):
+        # Ignoruj własne wiadomości
         if message.author == self.user:
+            return
+        
+        # Ignoruj wiadomości starsze niż uruchomienie bota
+        if message.created_at < FIRST_RUN_TIME:
             return
         
         author_name = message.author.name
@@ -94,7 +96,7 @@ class DiscordMonitor(discord.Client):
             "timestamp": message.created_at.isoformat()
         })
         
-        # Check for instant alerts - ТОЛЬКО dla ważnych autorów i kanałów
+        # Check for instant alerts - TYLKO dla ważnych autorów i kanałów
         should_alert = False
         alert_type = None
         alert_asset = None
@@ -103,12 +105,12 @@ class DiscordMonitor(discord.Client):
         if channel_name.startswith("portfel-"):
             should_alert = True
             alert_type = "AKCJA PORTFELA"
-            alert_asset = channel_name
+            alert_asset = channel_name.replace("portfel-", "").replace("-", " ").title()
         
         # Alert 2: Wpisy Piotra (dnarynkow) lub Jurka (jurek_dna) z kanałów przemyślenia
         elif author_name in ["dnarynkow", "jurek_dna"] and channel_name in ["przemyślenia-piotr", "przemyślenia-jurek"]:
             # Tylko jeśli ma słowa klucze akcji
-            action_keywords = ["kupuję", "kupię", "sprzedaję", "sprzedaż", "zwiększam", "zmniejszam", "wychodzę", "wchodzę", "kupna", "sprzedaży"]
+            action_keywords = ["kupuję", "kupię", "sprzedaję", "sprzedaż", "zwiększam", "zmniejszam", "wychodzę", "wchodzę", "kupna", "sprzedaży", "buy", "sell"]
             if any(keyword in content.lower() for keyword in action_keywords):
                 should_alert = True
                 alert_type = "EKSPERCKA OPINIA"
@@ -118,9 +120,9 @@ class DiscordMonitor(discord.Client):
         elif author_name in ["dnarynkow", "jurek_dna"]:
             should_alert = True
             alert_type = "WPIS EKSPERTA"
-            alert_asset = channel_name.replace("portfel-", "").replace("-", " ").title()
+            alert_asset = channel_name
         
-        # Wyślij alert jeśli spełnia warunki
+        # Wyślij alert jeśli spełnia warunki i dodaj do dziennego podsumowania
         if should_alert:
             alert_data = {
                 "author": author_name,
@@ -128,9 +130,15 @@ class DiscordMonitor(discord.Client):
                 "message": content[:500],  # Ogranicz do 500 znaków
                 "type": alert_type,
                 "asset": alert_asset,
-                "relevance": "wysoka"
+                "relevance": "wysoka",
+                "timestamp": message.created_at.isoformat()
             }
+            
+            # Wyślij natychmiastowy alert
             await send_instant_alert(alert_data)
+            
+            # Dodaj do dziennego podsumowania
+            DAILY_MESSAGES.append(alert_data)
 
 # ==================== EMAIL ====================
 
@@ -247,6 +255,9 @@ PRIORYTET 4 (Niskiprioritet):
 PRIORYTET 5:
 - Propozycje KUPNA/SPRZEDAŻY nowych spółek od Piotra lub Jurka
 
+MONITOROWANE AKTYWA:
+{stocks_list}
+
 WIADOMOŚCI Z DISCORD:
 {messages_text}
 
@@ -255,7 +266,8 @@ INSTRUKCJE:
 2. Wpisy z "przemyślenia-jurek" i "przemyślenia-piotr" → BIERZ TYLKO jeśli sugerują AKCJĘ (kupno/sprzedaż/zmianę pozycji)
 3. Wpisy ze spółek → BIERZ TYLKO jeśli autor to dnarynkow lub jurek_dna i coś istotnego
 4. Propozycje nowych spółek → BIERZ TYLKO od Piotra/Jurka
-5. Dla każdej wiadomości podaj:
+5. Claude musi rozumieć KONTEKST - np Elon Musk = Tesla, półprzewodniki = chip stocks, itp
+6. Dla każdej wiadomości podaj:
    - Które aktywo dotyczy
    - Treść (streszczenie)
    - Autora
@@ -344,6 +356,9 @@ def generate_html_report(relevant_messages):
             <h2>📊 Raport Discord - DNA Rynków</h2>
             <p><strong>Data:</strong> {now.strftime("%Y-%m-%d %H:%M")}</p>
             <p><strong>Znaleziono:</strong> {len(relevant_messages)} istotnych wiadomości</p>
+            <p style="color: #666; font-size: 13px; font-style: italic;">
+                Uwaga: Niektóre z tych wiadomości mogły przysłać się jako natychmiastowe alerty.
+            </p>
             <hr>
     """
     
@@ -505,46 +520,46 @@ async def main():
             if current_time == target_time:
                 print(f"\n⏰ {now.strftime('%H:%M')} - GENEROWANIE RAPORTU")
                 
-                if bot.collected_messages:
-                    # Format messages for Claude
-                    messages_text = "\n---\n".join([
-                        f"[{msg['timestamp']}] @{msg['author']} (#{msg['channel']}): {msg['content']}"
-                        for msg in bot.collected_messages[-500:]  # Last 500 messages
-                    ])
+                if bot.collected_messages or DAILY_MESSAGES:
+                    # Combine daily alerts + newly collected messages
+                    all_messages = DAILY_MESSAGES.copy()
                     
-                    print(f"📊 Analizuję {len(bot.collected_messages)} zebranych wiadomości...")
-                    
-                    # Analyze with Claude
-                    relevant_messages = analyze_messages_with_claude(messages_text)
-                    print(f"✅ Znaleziono {len(relevant_messages)} istotnych wiadomości")
+                    # Add newly collected messages to analyze
+                    if bot.collected_messages:
+                        # Format messages for Claude
+                        messages_text = "\n".join([
+                            f"[{m['timestamp']}] #{m['channel']} @{m['author']}: {m['content']}"
+                            for m in bot.collected_messages
+                        ])
+                        
+                        # Analyze with Claude
+                        analyzed = analyze_messages_with_claude(messages_text)
+                        if analyzed:
+                            all_messages.extend(analyzed)
                     
                     # Generate and send report
-                    html_report = generate_html_report(relevant_messages)
-                    await send_email(
-                        subject=f"📊 Raport Discord DNA Rynków - {now.strftime('%Y-%m-%d')}",
-                        body_html=html_report
-                    )
+                    if all_messages:
+                        html_report = generate_html_report(all_messages)
+                        await send_email(
+                            f"📊 Raport Discord DNA Rynków - {now.strftime('%Y-%m-%d')}",
+                            html_report
+                        )
+                        print(f"✅ Raport wysłany! Znaleziono: {len(all_messages)} wiadomości")
                     
-                    # Clear collected messages
-                    bot.collected_messages = []
+                    # Reset daily messages for next day
+                    DAILY_MESSAGES.clear()
+                    bot.collected_messages.clear()
                 else:
-                    print("⚠️ Brak zebranych wiadomości")
-                    html_report = generate_html_report([])
-                    await send_email(
-                        subject=f"📊 Raport Discord DNA Rynków - {now.strftime('%Y-%m-%d')}",
-                        body_html=html_report
-                    )
-                
-                # Wait 61 seconds to avoid duplicate reports
-                await asyncio.sleep(61)
+                    print("ℹ️ Brak wiadomości do raportu")
             
-            # Check every 30 seconds
-            await asyncio.sleep(30)
+            await asyncio.sleep(60)  # Check every minute
     
-    except KeyboardInterrupt:
-        print("\n⚠️ Bot wyłączony")
+    except Exception as e:
+        print(f"❌ Błąd w main loop: {e}")
     finally:
         await bot.close()
+
+# ==================== RUN ====================
 
 if __name__ == "__main__":
     asyncio.run(main())
