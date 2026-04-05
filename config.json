@@ -3,8 +3,8 @@
   "gmail_address": "${GMAIL_ADDRESS}",
   "gmail_password": "${GMAIL_PASSWORD}",
   "recipient_email": "jan.goralski@gmail.com",
-  "report_hour": 2,
-  "report_minute": 28,
+  "report_hour": 3,
+  "report_minute": 17,
   "stocks_and_etfs": [
     "ASML",
     "Micron",
