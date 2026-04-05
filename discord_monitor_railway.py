@@ -9,6 +9,8 @@ import anthropic
 import os
 from dotenv import load_dotenv
 
+print("TEST: Bot się uruchomił!")
+
 # Load environment variables from .env if it exists (for local development)
 load_dotenv()
 
