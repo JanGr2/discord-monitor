@@ -8,15 +8,17 @@ from datetime import datetime, time, timedelta
 import anthropic
 import os
 from dotenv import load_dotenv
-
-print("TEST: Bot się uruchomił!")
+import pytz
 
 # Load environment variables from .env if it exists (for local development)
 load_dotenv()
 
+# ==================== TIMEZONE ====================
+POLAND_TZ = pytz.timezone('Europe/Warsaw')
+
 # ==================== CONFIG ====================
 CONFIG_FILE = "config.json"
-FIRST_RUN_TIME = datetime.now() - timedelta(hours=24)  # Czyta wiadomości z ostatnich 24h
+FIRST_RUN_TIME = datetime.now(POLAND_TZ) - timedelta(hours=24)  # Czyta wiadomości z ostatnich 24h
 DAILY_MESSAGES = []  # Przechowuje wiadomości dla codziennego raportu
 
 def load_config():
@@ -62,6 +64,10 @@ if not GMAIL_ADDRESS or not GMAIL_PASSWORD:
     print("ERROR: Gmail credentials not set!")
     exit(1)
 
+print(f"✅ Config loaded!")
+print(f"⏰ Strefa czasowa: Europe/Warsaw (UTC+2)")
+print(f"📊 Raport zaplanowany na: {REPORT_HOUR:02d}:{REPORT_MINUTE:02d} czasu polskiego")
+
 # ==================== DISCORD CLIENT ====================
 
 class DiscordMonitor(discord.Client):
@@ -72,7 +78,7 @@ class DiscordMonitor(discord.Client):
 
     async def on_ready(self):
         print(f"✅ Bot zalogowany jako: {self.user}")
-        print(f"⏰ Czas uruchomienia: {FIRST_RUN_TIME.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"⏰ Czas uruchomienia: {datetime.now(POLAND_TZ).strftime('%Y-%m-%d %H:%M:%S')} (czasem Polski)")
         print(f"📊 Codzienne podsumowanie o: {REPORT_HOUR:02d}:{REPORT_MINUTE:02d}")
         self.ready = True
 
@@ -82,7 +88,9 @@ class DiscordMonitor(discord.Client):
             return
         
         # Ignoruj wiadomości starsze niż uruchomienie bota
-        if message.created_at < FIRST_RUN_TIME:
+        # Discord zwraca UTC, konwertuj do polskiego czasu
+        message_time = message.created_at.replace(tzinfo=pytz.UTC).astimezone(POLAND_TZ)
+        if message_time < FIRST_RUN_TIME:
             return
         
         author_name = message.author.name
@@ -206,7 +214,7 @@ async def send_instant_alert(message_data):
                 </p>
                 <p style="margin: 0; font-size: 12px; color: #666;">
                     Typ: <span style="color: {color}; font-weight: bold;">{msg_type}</span><br>
-                    Czas: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+                    Czas: {datetime.now(POLAND_TZ).strftime("%Y-%m-%d %H:%M:%S")}
                 </p>
             </div>
             
@@ -321,7 +329,7 @@ Jeśli brak istotnych wiadomości, zwróć: []
 def generate_html_report(relevant_messages):
     """Generate HTML email report"""
     
-    now = datetime.now()
+    now = datetime.now(POLAND_TZ)
     
     if not relevant_messages:
         html = f"""
@@ -329,7 +337,7 @@ def generate_html_report(relevant_messages):
             <head><meta charset="UTF-8"></head>
             <body style="font-family: Arial, sans-serif; color: #333;">
                 <h2>📊 Raport Discord - DNA Rynków</h2>
-                <p><strong>Data:</strong> {now.strftime("%Y-%m-%d %H:%M")}</p>
+                <p><strong>Data:</strong> {now.strftime("%Y-%m-%d %H:%M")} (czas Polski)</p>
                 <hr>
                 <p style="color: #666; font-size: 14px;">
                     Dzisiaj brak istotnych wiadomości dotyczących Twoich aktywów na kanałach premium.
@@ -356,7 +364,7 @@ def generate_html_report(relevant_messages):
         <head><meta charset="UTF-8"></head>
         <body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
             <h2>📊 Raport Discord - DNA Rynków</h2>
-            <p><strong>Data:</strong> {now.strftime("%Y-%m-%d %H:%M")}</p>
+            <p><strong>Data:</strong> {now.strftime("%Y-%m-%d %H:%M")} (czas Polski)</p>
             <p><strong>Znaleziono:</strong> {len(relevant_messages)} istotnych wiadomości</p>
             <p style="color: #666; font-size: 13px; font-style: italic;">
                 Uwaga: Niektóre z tych wiadomości mogły przysłać się jako natychmiastowe alerty.
@@ -500,10 +508,13 @@ def generate_html_report(relevant_messages):
 # ==================== MAIN LOOP ====================
 
 async def main():
+    print("🟡 main() się uruchomiła!")
     bot = DiscordMonitor()
+    print("🟡 DiscordMonitor stworzony!")
     
     # Start bot in background
     bot_task = asyncio.create_task(bot.start(DISCORD_TOKEN))
+    print("🟡 Bot.start() uruchomiony!")
     
     try:
         # Wait for bot to be ready
@@ -514,7 +525,7 @@ async def main():
         
         # Main loop - check time every minute
         while True:
-            now = datetime.now()
+            now = datetime.now(POLAND_TZ)
             current_time = time(now.hour, now.minute)
             target_time = time(REPORT_HOUR, REPORT_MINUTE)
             
@@ -564,4 +575,5 @@ async def main():
 # ==================== RUN ====================
 
 if __name__ == "__main__":
+    print("TEST: Bot się uruchomił!")
     asyncio.run(main())
