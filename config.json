@@ -1,10 +1,10 @@
 {
-  "discord_token": "MTQ5MDEwNTkxNTk5Nzk1MDA1Mg.GBe5mC.g2DZsf6_0b0WK9tTTmZdj2pLdSeHsY9Q8bb0RA",
-  "gmail_address": "TUTAJ_TWOJ_GMAIL@gmail.com",
-  "gmail_password": "TUTAJ_APP_PASSWORD_GMAILA",
-  "recipient_email": "TUTAJ_EMAIL_NA_KTOREGO_WYSYLAC_RAPORTY@gmail.com",
-  "report_hour": 8,
-  "report_minute": 0,
+  "discord_token": "${DISCORD_TOKEN}",
+  "gmail_address": "${GMAIL_ADDRESS}",
+  "gmail_password": "${GMAIL_PASSWORD}",
+  "recipient_email": "jan.goralski@gmail.com",
+  "report_hour": 2,
+  "report_minute": 5,
   "stocks_and_etfs": [
     "ASML",
     "Micron",
