@@ -4,7 +4,7 @@
   "gmail_password": "${GMAIL_PASSWORD}",
   "recipient_email": "jan.goralski@gmail.com",
   "report_hour": 2,
-  "report_minute": 19,
+  "report_minute": 28,
   "stocks_and_etfs": [
     "ASML",
     "Micron",
